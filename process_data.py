@@ -86,23 +86,28 @@ def read_data_files(filenames, datapath, ids=None):
 
 def create_vocab(df, datapath):
     """
-    create vocabulary out of the dataset if not already existing
-    and save vocabulary hash in vocab.p pickle file
+    create vocabulary and maximum length of sentence out of the dataset if not already existing
+    and save vocabulary hash in vocab_max_l.p pickle file
 
     :return: set of all unique words in the used dataset
     """
-    if os.path.isfile("vocab.p"):
-        vocab = pickle.load( open( "vocab.p", "rb" ))  # search if vocab file is already existing
+    if os.path.isfile("vocab_max_l.p"):
+        o = pickle.load( open( "vocab_max_l.p", "rb" ))  # search if vocab file is already existing
+        vocab = o[0]
+        max_l = o[1]
     else:
-        vocab = set()
+        vocab = defaultdict(int)
+        max_l = 0
         for d in read_data_files(df.files, datapath):
-            for w in clean_str(d).split(" "):
-                vocab.add(w)
+            words = clean_str(d).split(" ")
+            if len(words) > max_l:
+                max_l = len(words)
 
-        cPickle.dump(vocab, open("vocab.p", "wb"))
-    return  vocab
+            for w in words:
+                vocab[w] += 1
 
-
+        cPickle.dump([vocab, max_l], open("vocab_max_l.p", "wb"))
+    return  vocab, max_l
 
 def build_data_cv(df, datapath, n_folds=5):
     """
@@ -134,55 +139,6 @@ def build_data_cv(df, datapath, n_folds=5):
 
     return kfolds_data
 
-
-# def build_data_cv(data_folder, cv=10, clean_string=True):
-#     """
-#     Loads data and split into 10 folds.
-#
-#     :param data_folder:
-#     :param cv:
-#     :param clean_string:
-#     :return:
-#     """
-#     revs = []
-#     pos_file = data_folder[0]
-#     neg_file = data_folder[1]
-#     vocab = defaultdict(float)
-#     with open(pos_file, "rb") as f:
-#         for line in f:
-#             rev = []
-#             rev.append(line.strip())
-#             if clean_string:
-#                 orig_rev = clean_str(" ".join(rev))
-#             else:
-#                 orig_rev = " ".join(rev).lower()
-#             words = set(orig_rev.split())
-#             for word in words:
-#                 vocab[word] += 1
-#             datum = {"y":1,
-#                       "text": orig_rev,
-#                       "num_words": len(orig_rev.split()),
-#                       "split": np.random.randint(0, cv)}
-#             revs.append(datum)
-#     with open(neg_file, "rb") as f:
-#         for line in f:
-#             rev = []
-#             rev.append(line.strip())
-#             if clean_string:
-#                 orig_rev = clean_str(" ".join(rev))
-#             else:
-#                 orig_rev = " ".join(rev).lower()
-#             words = set(orig_rev.split())
-#             for word in words:
-#                 vocab[word] += 1
-#             datum = {"y":0,
-#                       "text": orig_rev,
-#                       "num_words": len(orig_rev.split()),
-#                       "split": np.random.randint(0, cv)}
-#             revs.append(datum)
-#     return revs, vocab
-
-
 def get_W(word_vecs, k=300):
     """
     Get word matrix. W[i] is the vector for word indexed by i
@@ -191,9 +147,9 @@ def get_W(word_vecs, k=300):
     word_idx_map = dict()
     W = np.zeros(shape=(vocab_size+1, k))            
     W[0] = np.zeros(k)
-    i = 1
-    for word in word_vecs:
-        W[i] = word_vecs[word]
+
+    for i, word in enumerate(word_vecs):
+        W[i+1] = word_vecs[word]  # i+1 as i=0 is already filled with zeros
         word_idx_map[word] = i
         i += 1
     return W, word_idx_map
@@ -224,15 +180,20 @@ def load_bin_vec(fname, vocab):
     return word_vecs
 
 
-def add_unknown_words(word_vecs, vocab, min_df=1, k=300):
+def add_unknown_words(word_vecs, vocab, min_df=10, k=300):
     """
-    For words that occur in at least min_df documents, create a separate word vector.    
+    For words that occur in at least min_df documents, create a separate word vector.
     0.25 is chosen so the unknown vectors have (approximately) same variance as pre-trained ones
+
+    :param word_vecs: already loaded word_vectors from unsupervised training (word2vec) to add unknown words on them
+    :param vocab: dictionary of words from training set and their document frequency.
+    :param min_df: minimum document frequency of a word in order to make word vector for it
+    :param k: length of vector
+    :return: this method updates to the sent word_vecs referenced object
     """
     for word in vocab:
         if word not in word_vecs and vocab[word] >= min_df:
             word_vecs[word] = np.random.uniform(-0.25, 0.25, k)
-
 
 def clean_str(string, TREC=False):
     """
@@ -255,7 +216,9 @@ def clean_str(string, TREC=False):
     string = re.sub(r"\(", " \( ", string) 
     string = re.sub(r"\)", " \) ", string) 
     string = re.sub(r"\?", " \? ", string) 
-    string = re.sub(r"\s{2,}", " ", string)    
+    string = re.sub(r"\s{2,}", " ", string)
+    string = re.sub(r"\n{2,}", "\n", string)
+    string = re.sub(r"\t{2,}", "\n", string)
     return string.strip() if TREC else string.strip().lower()
 
 
@@ -265,7 +228,6 @@ if __name__ == "__main__":
     if not os.path.exists(args.idxfolder_name):
         os.makedirs(args.idxfolder_name)
 
-
     # loading data into kfolds containing iterators of equivalent documents
     print "starting loading data..."
 
@@ -273,43 +235,76 @@ if __name__ == "__main__":
 
     # creating vocabulary:
     print "creating vocab file.."
-    vocab = create_vocab(df, args.data_folder)
+    vocab, max_l = create_vocab(df, args.data_folder)
     print "finished creating vocab file"
-
-
-    print "creating kfolds.."
-    kfolds = build_data_cv(df, args.data_folder, args.percentage)
-
-    # iterating over each Kfold :
-    # Max_l max length of documents
-
-    for k, fold in enumerate(kfolds):
-        for split_id in  ["x_train", "y_train", "x_test", "y_test"]:
-
-            # open file with name split_id_k   eg. x_train_1
-            with open(args.idxfolder_name+,'w+')
-
-
-
-
-
-    max_l = np.max(pd.DataFrame(revs)["num_words"])
-
-    print "data loaded!"
-    print "number of sentences: " + str(len(revs))
-    print "vocab size: " + str(len(vocab))
+    print "vocab size: %s " % len(vocab)
+    print "number of sentences: %s " % len(df.file)
     print "max sentence length: " + str(max_l)
-    print "loading word2vec vectors...",
 
+    print "loading word2vec vectors...",
     # loading word2vec file
     w2v = load_bin_vec(args.w2v, vocab)
     print "word2vec loaded!"
     print "num words already in word2vec: " + str(len(w2v))
 
+
+    print "initializing word vectors for each word in the vocab"
+    # w2v is already initialized with word vectors representations
+    # initialize random vectors for vocab entries that are not in w2v
     add_unknown_words(w2v, vocab)
+
+    # W[i] is the wordvector of word with id i , while word_idx_map["word"] = id of this word
     W, word_idx_map = get_W(w2v)
+    # initialize random vectors for all words
     rand_vecs = {}
     add_unknown_words(rand_vecs, vocab)
     W2, _ = get_W(rand_vecs)
-    cPickle.dump([revs, W, W2, word_idx_map, vocab], open("mr.p", "wb"))
+
+
+    ################################################
+    # CREATING IDX MATRICES FOR EACH TRAINING FOLD #
+    ################################################
+    # in order to save some memory we load word indices of each cross fold into one nd file to load them separately:
+    # dividing training data into Kfolds
+    # iterating over each Kfold
+    # translating text into equivalent word_idx
+    # save every fold data into 2dmatrix one file in idxfolder_name folder
+
+    print "creating idx matrices for each fold 0.."
+    kfolds = build_data_cv(df, args.data_folder, args.percentage)
+
+    for k, fold in enumerate(kfolds):
+
+        print "fold %s of $s ..." % (k, len(kfolds))
+        for n in [("x_train", "y_train"), ("x_test", "y_test")]:
+
+            x = fold[n[0]]
+            y = fold[n[1]]
+
+            patch_2darray = np.empty((0,max_l+1), int)  # +1 for class label todo:  remove class label as well
+
+            for i, document in enumerate(x):
+
+                document = clean_str(document)
+                words = document.split(" ")
+
+                row = [word_idx_map[w] for w in words]
+
+                while len(row) < max_l:   #append zeros until all documents are equal no. of words # todo:sparse matrix
+                    row.append(0)
+
+                # add class label at the end of the sentence vector as compatible by 2nd file
+                # todo : change that to better representation for idx vectors
+                row.append(y[i])
+
+                patch_2darray = np.append(patch_2darray, np.array([row]), axis=0)
+
+            outfile = open(args.idxfolder_name + n[0].replace("x_","")+"_"+ str(k) + ".p","w+")
+            cPickle.dump(patch_2darray)
+
+    print "data loaded!"
+    # we dont need to load word_idx_map anymore
+    # cPickle.dump([revs, W, W2, word_idx_map, vocab], open("mr.p", "wb"))
+    cPickle.dump(W, open("mr_w2v.p", "wb"))
+    cPickle.dump(W2, open("mr_rnd.p", "wb"))
     print "dataset created!"

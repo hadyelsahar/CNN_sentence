@@ -8,6 +8,7 @@ Much of the code is modified from
 - https://github.com/mdenil/dropout (for dropout)
 - https://groups.google.com/forum/#!topic/pylearn-dev/3QbKtCumAW4 (for Adadelta)
 """
+
 import cPickle
 import numpy as np
 from collections import defaultdict, OrderedDict
@@ -16,6 +17,7 @@ import theano.tensor as T
 import re
 import warnings
 import sys
+
 warnings.filterwarnings("ignore")   
 
 #different non-linearities
@@ -35,8 +37,8 @@ def Iden(x):
 def train_conv_net(datasets,
                    U,
                    img_w=300, 
-                   filter_hs=[3,4,5],
-                   hidden_units=[100,2], 
+                   filter_hs=[3, 4, 5],
+                   hidden_units=[100, 2],
                    dropout_rate=[0.5],
                    shuffle_batch=True,
                    n_epochs=25, 
@@ -64,11 +66,14 @@ def train_conv_net(datasets,
     for filter_h in filter_hs:
         filter_shapes.append((feature_maps, 1, filter_h, filter_w))
         pool_sizes.append((img_h-filter_h+1, img_w-filter_w+1))
-    parameters = [("image shape",img_h,img_w),("filter shape",filter_shapes), ("hidden_units",hidden_units),
-                  ("dropout", dropout_rate), ("batch_size",batch_size),("non_static", non_static),
-                    ("learn_decay",lr_decay), ("conv_non_linear", conv_non_linear), ("non_static", non_static)
-                    ,("sqr_norm_lim",sqr_norm_lim),("shuffle_batch",shuffle_batch)]
-    print parameters    
+
+    parameters = [
+        ("image shape", img_h, img_w), ("filter shape", filter_shapes), ("hidden_units", hidden_units),
+        ("dropout", dropout_rate), ("batch_size",batch_size), ("non_static", non_static),
+        ("learn_decay", lr_decay), ("conv_non_linear", conv_non_linear), ("non_static", non_static),
+        ("sqr_norm_lim", sqr_norm_lim), ("shuffle_batch", shuffle_batch)
+    ]
+    print parameters
     
     #define model architecture
     index = T.lscalar()
@@ -111,19 +116,19 @@ def train_conv_net(datasets,
         extra_data_num = batch_size - datasets[0].shape[0] % batch_size
         train_set = np.random.permutation(datasets[0])   
         extra_data = train_set[:extra_data_num]
-        new_data=np.append(datasets[0],extra_data,axis=0)
+        new_data = np.append(datasets[0],extra_data,axis=0)
     else:
         new_data = datasets[0]
     new_data = np.random.permutation(new_data)
     n_batches = new_data.shape[0]/batch_size
     n_train_batches = int(np.round(n_batches*0.9))
     #divide train set into train/val sets 
-    test_set_x = datasets[1][:,:img_h] 
-    test_set_y = np.asarray(datasets[1][:,-1],"int32")
-    train_set = new_data[:n_train_batches*batch_size,:]
-    val_set = new_data[n_train_batches*batch_size:,:]     
-    train_set_x, train_set_y = shared_dataset((train_set[:,:img_h],train_set[:,-1]))
-    val_set_x, val_set_y = shared_dataset((val_set[:,:img_h],val_set[:,-1]))
+    test_set_x = datasets[1][:, :img_h]
+    test_set_y = np.asarray(datasets[1][:, -1], "int32")
+    train_set = new_data[:n_train_batches*batch_size, :]
+    val_set = new_data[n_train_batches*batch_size:, :]
+    train_set_x, train_set_y = shared_dataset((train_set[:, :img_h], train_set[:, -1]))
+    val_set_x, val_set_y = shared_dataset((val_set[:, :img_h], val_set[:, -1]))
     n_val_batches = n_batches - n_train_batches
     val_model = theano.function([index], classifier.errors(y),
          givens={
@@ -207,7 +212,7 @@ def sgd_updates_adadelta(params,cost,rho=0.95,epsilon=1e-6,norm_lim=9,word_vec_n
     gparams = []
     for param in params:
         empty = np.zeros_like(param.get_value())
-        exp_sqr_grads[param] = theano.shared(value=as_floatX(empty),name="exp_grad_%s" % param.name)
+        exp_sqr_grads[param] = theano.shared(value=as_floatX(empty), name="exp_grad_%s" % param.name)
         gp = T.grad(cost, param)
         exp_sqr_ups[param] = theano.shared(value=as_floatX(empty), name="exp_grad_%s" % param.name)
         gparams.append(gp)
@@ -265,44 +270,50 @@ def get_idx_from_sent(sent, word_idx_map, max_l=51, k=300, filter_h=5):
 def make_idx_data_cv(revs, word_idx_map, cv, max_l=51, k=300, filter_h=5):
     """
     Transforms sentences into a 2-d matrix.
+    The last index of the sentence is it's class label
+    todo : use scipy sparse matrix instead of padding with zeros
     """
     train, test = [], []
     for rev in revs:
         sent = get_idx_from_sent(rev["text"], word_idx_map, max_l, k, filter_h)   
         sent.append(rev["y"])
-        if rev["split"]==cv:            
+        if rev["split"] == cv:
             test.append(sent)        
         else:  
             train.append(sent)   
-    train = np.array(train,dtype="int")
-    test = np.array(test,dtype="int")
-    return [train, test]     
+    train = np.array(train, dtype="int")
+    test = np.array(test, dtype="int")
+    return [train, test]
   
    
-if __name__=="__main__":
+if __name__ == "__main__":
+
     print "loading data...",
-    x = cPickle.load(open("mr.p","rb"))
+    x = cPickle.load(open("mr.p", "rb"))
     revs, W, W2, word_idx_map, vocab = x[0], x[1], x[2], x[3], x[4]
     print "data loaded!"
-    mode= sys.argv[1]
-    word_vectors = sys.argv[2]    
-    if mode=="-nonstatic":
+
+    mode = sys.argv[1]
+    word_vectors = sys.argv[2]
+
+    if mode == "-nonstatic":
         print "model architecture: CNN-non-static"
-        non_static=True
-    elif mode=="-static":
+        non_static = True
+    elif mode == "-static":
         print "model architecture: CNN-static"
-        non_static=False
+        non_static = False
     execfile("conv_net_classes.py")    
-    if word_vectors=="-rand":
+    if word_vectors == "-rand":
         print "using: random vectors"
         U = W2
-    elif word_vectors=="-word2vec":
+    elif word_vectors == "-word2vec":
         print "using: word2vec vectors"
         U = W
     results = []
-    r = range(0,10)    
+    r = range(0, 10)
+
     for i in r:
-        datasets = make_idx_data_cv(revs, word_idx_map, i, max_l=56,k=300, filter_h=5)
+        datasets = make_idx_data_cv(revs, word_idx_map, i, max_l=27987, k=300, filter_h=5)
         perf = train_conv_net(datasets,
                               U,
                               lr_decay=0.95,

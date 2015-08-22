@@ -12,10 +12,17 @@ import os
 import re
 from collections import defaultdict
 import argparse
+from threading import Thread
+import Queue
 import cPickle
 import pandas as pd
 import numpy as np
-from sklearn.cross_validation import StratifiedKFold, train_test_split
+from scipy.sparse import csr_matrix
+import random
+import copy
+from  IPython.core.debugger import Tracer as Tracer
+
+# from sklearn.cross_validation import StratifiedKFold, train_test_split
 
 ##########################
 # COMMAND LINE ARGUMENTS #
@@ -24,17 +31,17 @@ parser = argparse.ArgumentParser(description='script create sub sample of datase
 parser.add_argument('-i', '--input', help='training file path', required=True)
 parser.add_argument('-f', '--data_folder', help='data folder', required=True)
 parser.add_argument('-w2v', '--w2v', help='word 2 vec binary file', required=True)
-parser.add_argument('-percentage', '--percentage', help=" percentage of training set to experiment on", required=False)
-parser.add_argument('-uniq', '--unique', help="unique words or all from each file", action='store_true', required=False)
+parser.add_argument('-p', '--percentage', help=" percentage of training set to experiment on", required=False)
+# parser.add_argument('-uniq', '--unique', help="unique words or all from each file", action='store_true', required=False)
 parser.add_argument('-idxfname', '--idxfolder_name', help="optional custom folder path to save all idx files created", required=False)
 
 args = parser.parse_args()
-if not hasattr(args, "percentage"):
+if args.percentage is None:
     args.percentage = 1
 else:
     args.percentage = float(args.percentage)
 
-if not hasattr(args, "idxfolder_name"):
+if args.idxfolder_name is None:
     args.idxfolder_name = "./idx_data/"
 elif args.idxfolder_name[-1] is not "/" :  # additional of extra / if path doesn't have one
     args.idxfolder_name = args.idxfolder_name + "/"
@@ -61,6 +68,7 @@ def get_ids(filename, take_percentage=1):
     d2 = df[df.label == labels[1]]
     d2 = d2[:int(d2.shape[0]*take_percentage)]   # limiting the first class to % of it
     df = pd.concat([d1, d2])
+    df = df.reset_index()
 
     return df
 
@@ -72,6 +80,7 @@ def read_data_files(filenames, datapath, ids=None):
     :param datapath: datapath to concatinate before each filename
     :return: iterator of text containing all text in all files in order
     """
+    filenames = np.array(filenames) # make sure it's array
     if ids is None:
         ids = range(0, len(filenames))
 
@@ -92,13 +101,13 @@ def create_vocab(df, datapath):
     :return: set of all unique words in the used dataset
     """
     if os.path.isfile("vocab_max_l.p"):
-        o = pickle.load( open( "vocab_max_l.p", "rb" ))  # search if vocab file is already existing
+        o = cPickle.load(open("vocab_max_l.p", "rb"))  # search if vocab file is already existing
         vocab = o[0]
         max_l = o[1]
     else:
         vocab = defaultdict(int)
         max_l = 0
-        for d in read_data_files(df.files, datapath):
+        for d in read_data_files(df.file, datapath):
             words = clean_str(d).split(" ")
             if len(words) > max_l:
                 max_l = len(words)
@@ -109,9 +118,9 @@ def create_vocab(df, datapath):
         cPickle.dump([vocab, max_l], open("vocab_max_l.p", "wb"))
     return  vocab, max_l
 
-def build_data_cv(df, datapath, n_folds=5):
+def build_data_cv(df, datapath, n_folds=10):
     """
-    function creating CV cross folds
+    function creating splits for cross folds
 
     :param df: pandas dataframe containing training examples in form of {file, label}
     :param datapath: data path that has all training files
@@ -120,24 +129,27 @@ def build_data_cv(df, datapath, n_folds=5):
     id is the file name (document id), X is the document text, and y is the class label
     """
 
-    y = np.array(df.label)
+    kf_ids = [np.array([], dtype=int) for _ in range(0, 10)]
 
-    kf = StratifiedKFold(y, n_folds=n_folds, shuffle=False, random_state=2)
+    # split each class ids into number of folds and add to each fold
+    ls = df.label.unique()
+    for l in ls:
+        c = df.label[df.label == l].index
+        for i in c:
+            rnd = random.randint(0, n_folds-1)
+            kf_ids[rnd] = np.append(kf_ids[rnd], i)
 
-    kfolds_data = []
+    splits_data = []
 
-    for trainids, testids in kf:
+    for ids in kf_ids:
 
-        kfolds_data.append({
-            "id_train": [i for i in list(df.file) if i in trainids]
-            "x_train": read_data_files(list(df.file), datapath, trainids),
-            "y_train": y[trainids],
-            "id_test": [i for i in list(df.file) if i in testids]
-            "x_test": read_data_files(list(df.file), datapath, testids),
-            "y_test": y[testids]
+        splits_data.append({
+            "id": np.array(df.file[ids]),
+            "x": read_data_files(list(df.file), datapath, ids),
+            "y": np.array(df.label[ids])
         })
 
-    return kfolds_data
+    return splits_data
 
 def get_W(word_vecs, k=300):
     """
@@ -224,6 +236,9 @@ def clean_str(string, TREC=False):
 
 if __name__ == "__main__":
 
+    # padding = filtersize - 1 see : conv_net_sentence.py  #todo : add padding implicitly
+    pad = 4
+
     # create folder to save idx data inside
     if not os.path.exists(args.idxfolder_name):
         os.makedirs(args.idxfolder_name)
@@ -231,7 +246,7 @@ if __name__ == "__main__":
     # loading data into kfolds containing iterators of equivalent documents
     print "starting loading data..."
 
-    df = get_ids(args.input,args.percentage)
+    df = get_ids(args.input, args.percentage)
 
     # creating vocabulary:
     print "creating vocab file.."
@@ -270,41 +285,63 @@ if __name__ == "__main__":
     # translating text into equivalent word_idx
     # save every fold data into 2dmatrix one file in idxfolder_name folder
 
-    print "creating idx matrices for each fold 0.."
-    kfolds = build_data_cv(df, args.data_folder, args.percentage)
+    print "creating idx matrices for each fold .."
+    n_folds = 10
+    splits = build_data_cv(df, args.data_folder, n_folds)
 
-    for k, fold in enumerate(kfolds):
 
-        print "fold %s of $s ..." % (k, len(kfolds))
-        for n in [("x_train", "y_train"), ("x_test", "y_test")]:
+    def create_idx(document, label, word_idx_map, pad, max_l, patch_2darray):
 
-            x = fold[n[0]]
-            y = fold[n[1]]
+        q = patch_2darray.get()
 
-            patch_2darray = np.empty((0,max_l+1), int)  # +1 for class label todo:  remove class label as well
+        document = clean_str(document)
+        words = document.split(" ")
+        row = [word_idx_map[w] for w in words if w in word_idx_map]
+        while len(row) < max_l + 2*pad:   #append zeros until all documents are equal no. of words # todo:sparse matrix
+                row.append(0)
 
-            for i, document in enumerate(x):
+        row.append(label)
+        q = np.append(q, np.array([row]), axis=0)
+        patch_2darray.put(q)
 
-                document = clean_str(document)
-                words = document.split(" ")
 
-                row = [word_idx_map[w] for w in words]
+    # parallelizing generation of indices
+    # iterate over patches and add to thread list
+    # if active threads = max thread number wait until threads empty
+    # add more until all patches are over
+    active_threads = []
+    max_thread_no = 7
 
-                while len(row) < max_l:   #append zeros until all documents are equal no. of words # todo:sparse matrix
-                    row.append(0)
+    for k, fold in enumerate(splits):
 
-                # add class label at the end of the sentence vector as compatible by 2nd file
-                # todo : change that to better representation for idx vectors
-                row.append(y[i])
+        print "patch %s of %s  started" % (k+1, n_folds)
 
-                patch_2darray = np.append(patch_2darray, np.array([row]), axis=0)
+        x = fold["x"]
+        y = fold["y"]
 
-            outfile = open(args.idxfolder_name + n[0].replace("x_","")+"_"+ str(k) + ".p","w+")
-            cPickle.dump(patch_2darray)
+        patch_2darray = Queue.Queue()
+        patch_2darray.put(np.zeros((0, max_l+1+2*pad), int))
+
+        for i, document in enumerate(x):
+
+            t = Thread(target=create_idx, args=(document, y[i], word_idx_map, pad, max_l, patch_2darray))
+            t.start()
+
+            active_threads.append(t)
+
+            if len(active_threads) > max_thread_no:
+                for t in active_threads:
+                    t.join()
+                active_threads = []
+
+        outfile = open("%s%s.p" % (args.idxfolder_name, k), "wb")
+        matrix = csr_matrix(patch_2darray.get())
+        # matrix = patch_2darray.get()
+        cPickle.dump(matrix, outfile)
+        outfile.close()
 
     print "data loaded!"
     # we dont need to load word_idx_map anymore
-    # cPickle.dump([revs, W, W2, word_idx_map, vocab], open("mr.p", "wb"))
     cPickle.dump(W, open("mr_w2v.p", "wb"))
     cPickle.dump(W2, open("mr_rnd.p", "wb"))
     print "dataset created!"

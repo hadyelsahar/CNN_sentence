@@ -9,6 +9,7 @@ Much of the code is modified from
 - https://groups.google.com/forum/#!topic/pylearn-dev/3QbKtCumAW4 (for Adadelta)
 """
 
+import os
 import cPickle
 import numpy as np
 from collections import defaultdict, OrderedDict
@@ -17,6 +18,9 @@ import theano.tensor as T
 import re
 import warnings
 import sys
+from scipy.sparse import csr_matrix, vstack
+from IPython.core.debugger import Tracer
+
 
 warnings.filterwarnings("ignore")   
 
@@ -49,14 +53,25 @@ def train_conv_net(datasets,
                    sqr_norm_lim=9,
                    non_static=True):
     """
+
     Train a simple conv net
-    img_h = sentence length (padded where necessary)
-    img_w = word vector length (300 for word2vec)
-    filter_hs = filter window sizes    
-    hidden_units = [x,y] x is the number of feature maps (per filter window), and y is the penultimate layer
-    sqr_norm_lim = s^2 in the paper
-    lr_decay = adadelta decay parameter
-    """    
+
+    :param datasets:
+    :param U:
+    :param img_w: word vector length (300 for word2vec)
+    :param filter_hs: filter window sizes
+    :param hidden_units: [x,y] x is the number of feature maps (per filter window), and y is the penultimate layer
+    :param dropout_rate:
+    :param shuffle_batch:
+    :param n_epochs:
+    :param batch_size:
+    :param lr_decay: adadelta decay parameter
+    :param conv_non_linear:
+    :param activations:
+    :param sqr_norm_lim:  s^2 in the paper
+    :param non_static:
+    :return:
+    """
     rng = np.random.RandomState(3435)
     img_h = len(datasets[0][0])-1  
     filter_w = img_w    
@@ -69,7 +84,7 @@ def train_conv_net(datasets,
 
     parameters = [
         ("image shape", img_h, img_w), ("filter shape", filter_shapes), ("hidden_units", hidden_units),
-        ("dropout", dropout_rate), ("batch_size",batch_size), ("non_static", non_static),
+        ("dropout", dropout_rate), ("batch_size", batch_size), ("non_static", non_static),
         ("learn_decay", lr_decay), ("conv_non_linear", conv_non_linear), ("non_static", non_static),
         ("sqr_norm_lim", sqr_norm_lim), ("shuffle_batch", shuffle_batch)
     ]
@@ -251,50 +266,55 @@ def safe_update(dict_to, dict_from):
         dict_to[key] = val
     return dict_to
     
-def get_idx_from_sent(sent, word_idx_map, max_l=51, k=300, filter_h=5):
-    """
-    Transforms sentence into a list of indices. Pad with zeroes.
-    """
-    x = []
-    pad = filter_h - 1
-    for i in xrange(pad):
-        x.append(0)
-    words = sent.split()
-    for word in words:
-        if word in word_idx_map:
-            x.append(word_idx_map[word])
-    while len(x) < max_l+2*pad:
-        x.append(0)
-    return x
+# def get_idx_from_sent(sent, word_idx_map, max_l=51, k=300, filter_h=5):
+#     """
+#     Transforms sentence into a list of indices. Pad with zeroes.
+#     """
+#     x = []
+#     pad = filter_h - 1
+#     for i in xrange(pad):
+#         x.append(0)
+#     words = sent.split()
+#     for word in words:
+#         if word in word_idx_map:
+#             x.append(word_idx_map[word])
+#     while len(x) < max_l+2*pad:
+#         x.append(0)
+#     return x
 
-def make_idx_data_cv(revs, word_idx_map, cv, max_l=51, k=300, filter_h=5):
+def make_idx_data_cv(cv):
     """
     Transforms sentences into a 2-d matrix.
     The last index of the sentence is it's class label
     todo : use scipy sparse matrix instead of padding with zeros
     """
     train, test = [], []
-    for rev in revs:
-        sent = get_idx_from_sent(rev["text"], word_idx_map, max_l, k, filter_h)   
-        sent.append(rev["y"])
-        if rev["split"] == cv:
-            test.append(sent)        
-        else:  
-            train.append(sent)   
-    train = np.array(train, dtype="int")
-    test = np.array(test, dtype="int")
-    return [train, test]
-  
-   
-if __name__ == "__main__":
 
-    print "loading data...",
-    x = cPickle.load(open("mr.p", "rb"))
-    revs, W, W2, word_idx_map, vocab = x[0], x[1], x[2], x[3], x[4]
-    print "data loaded!"
+    for x in os.listdir('./idx_data/'):
+
+        if x == "%s.p" % cv:
+            test = cPickle.load(open("./idx_data/%s" % x, 'rb'))
+        else:
+            train.append(cPickle.load(open("./idx_data/%s" % x, 'rb')))
+
+    train = vstack(train)
+    return [train, test]
+
+if __name__ == "__main__":
 
     mode = sys.argv[1]
     word_vectors = sys.argv[2]
+
+    print "loading data...",
+
+    if word_vectors == "-rand":
+        print "using: random vectors"
+        U = W2 = cPickle.load(open("mr_rnd.p", "rb"))
+
+    elif word_vectors == "-word2vec":
+        print "using: word2vec vectors"
+        U = cPickle.load(open("mr_w2v.p", "rb"))
+
 
     if mode == "-nonstatic":
         print "model architecture: CNN-non-static"
@@ -302,22 +322,21 @@ if __name__ == "__main__":
     elif mode == "-static":
         print "model architecture: CNN-static"
         non_static = False
-    execfile("conv_net_classes.py")    
-    if word_vectors == "-rand":
-        print "using: random vectors"
-        U = W2
-    elif word_vectors == "-word2vec":
-        print "using: word2vec vectors"
-        U = W
+    execfile("conv_net_classes.py")
+
+    print "data loaded!"
+
+
     results = []
-    r = range(0, 10)
+    r = range(0, 10)  # hardcode iteration over 10 patches
 
     for i in r:
-        datasets = make_idx_data_cv(revs, word_idx_map, i, max_l=27987, k=300, filter_h=5)
+        datasets = make_idx_data_cv(i)
+        Tracer()()
         perf = train_conv_net(datasets,
                               U,
                               lr_decay=0.95,
-                              filter_hs=[3,4,5],
+                              filter_hs=[3, 4, 5],
                               conv_non_linear="relu",
                               hidden_units=[100,2], 
                               shuffle_batch=True, 

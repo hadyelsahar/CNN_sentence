@@ -46,8 +46,8 @@ def train_conv_net(datasets,
                    dropout_rate=[0.5],
                    shuffle_batch=True,
                    n_epochs=25, 
-                   batch_size=50, 
-                   lr_decay = 0.95,
+                   batch_size=50,
+                   lr_decay=0.95,
                    conv_non_linear="relu",
                    activations=[Iden],
                    sqr_norm_lim=9,
@@ -56,7 +56,7 @@ def train_conv_net(datasets,
 
     Train a simple conv net
 
-    :param datasets:
+    :param datasets: [train, test] two sparse csr matrices containing training and testing data
     :param U:
     :param img_w: word vector length (300 for word2vec)
     :param filter_hs: filter window sizes
@@ -73,14 +73,16 @@ def train_conv_net(datasets,
     :return:
     """
     rng = np.random.RandomState(3435)
-    img_h = len(datasets[0][0])-1  
-    filter_w = img_w    
+    img_h = len(datasets[0][0])-1        # change : max_l , y is outside x now
+    filter_w = img_w                     # 300 for w2vec
     feature_maps = hidden_units[0]
     filter_shapes = []
     pool_sizes = []
+
+    # [number of feature maps at layer m, number of feature maps at layer m-1, filter height, filter width]
     for filter_h in filter_hs:
-        filter_shapes.append((feature_maps, 1, filter_h, filter_w))
-        pool_sizes.append((img_h-filter_h+1, img_w-filter_w+1))
+        filter_shapes.append((feature_maps, 1, filter_h, filter_w))  # (100, 1, 3, 300), (100, 1, 4, 300), (100, 1, 5, 300)
+        pool_sizes.append((img_h-filter_h+1, img_w-filter_w+1))      # the feature size after convolution (take one out of each output filter)
 
     parameters = [
         ("image shape", img_h, img_w), ("filter shape", filter_shapes), ("hidden_units", hidden_units),
@@ -88,19 +90,29 @@ def train_conv_net(datasets,
         ("learn_decay", lr_decay), ("conv_non_linear", conv_non_linear), ("non_static", non_static),
         ("sqr_norm_lim", sqr_norm_lim), ("shuffle_batch", shuffle_batch)
     ]
+
     print parameters
     
-    #define model architecture
+    # define model architecture
     index = T.lscalar()
-    x = T.matrix('x')   
+    x = T.matrix('x')
     y = T.ivector('y')
-    Words = theano.shared(value = U, name = "Words")
+    Words = theano.shared(value=U, name="Words")
+
+
+    # setting the first row in wordvectors to zeros ??
     zero_vec_tensor = T.vector()
     zero_vec = np.zeros(img_w)
-    set_zero = theano.function([zero_vec_tensor], updates=[(Words, T.set_subtensor(Words[0,:], zero_vec_tensor))])
-    layer0_input = Words[T.cast(x.flatten(),dtype="int32")].reshape((x.shape[0],1,x.shape[1],Words.shape[1]))                                  
-    conv_layers = []
+    set_zero = theano.function([zero_vec_tensor], updates=[(Words, T.set_subtensor(Words[0, :], zero_vec_tensor))])
+
+    # replacing word indices with wordvectors and reshape to form the dataype again
+    # dimentions of the input layer is (batch size, 1(feature map), max_l, 300)
+    # Change : find out how to use sparse features for tensor representation
+    layer0_input = Words[T.cast(x.flatten(), dtype="int32")].reshape((x.shape[0], 1, x.shape[1], Words.shape[1]))
+
+    conv_layers = []  # 3 convolution layers for each filter 3, 4, 5
     layer1_inputs = []
+
     for i in xrange(len(filter_hs)):
         filter_shape = filter_shapes[i]
         pool_size = pool_sizes[i]
@@ -109,7 +121,7 @@ def train_conv_net(datasets,
         layer1_input = conv_layer.output.flatten(2)
         conv_layers.append(conv_layer)
         layer1_inputs.append(layer1_input)
-    layer1_input = T.concatenate(layer1_inputs,1)
+    layer1_input = T.concatenate(layer1_inputs, 1)     # concatinating outputs of three filters dimension should be (1,3,1,1)
     hidden_units[0] = feature_maps*len(filter_hs)    
     classifier = MLPDropout(rng, input=layer1_input, layer_sizes=hidden_units, activations=activations, dropout_rates=dropout_rate)
     
@@ -131,19 +143,19 @@ def train_conv_net(datasets,
         extra_data_num = batch_size - datasets[0].shape[0] % batch_size
         train_set = np.random.permutation(datasets[0])   
         extra_data = train_set[:extra_data_num]
-        new_data = np.append(datasets[0],extra_data,axis=0)
+        new_data = np.append(datasets[0],extra_data,axis=0)   # change : dataset[0] is the train data
     else:
-        new_data = datasets[0]
-    new_data = np.random.permutation(new_data)
+        new_data = datasets[0]                                # change : dataset[0] is the train data
+    new_data = np.random.permutation(new_data)                # shuffle training data
     n_batches = new_data.shape[0]/batch_size
-    n_train_batches = int(np.round(n_batches*0.9))
-    #divide train set into train/val sets 
-    test_set_x = datasets[1][:, :img_h]
-    test_set_y = np.asarray(datasets[1][:, -1], "int32")
-    train_set = new_data[:n_train_batches*batch_size, :]
-    val_set = new_data[n_train_batches*batch_size:, :]
-    train_set_x, train_set_y = shared_dataset((train_set[:, :img_h], train_set[:, -1]))
-    val_set_x, val_set_y = shared_dataset((val_set[:, :img_h], val_set[:, -1]))
+    n_train_batches = int(np.round(n_batches*0.9))            # 90 % of batches for training
+    # Divide train set into train/val sets
+    test_set_x = datasets[1][:, :img_h]                       # change : loading test set
+    test_set_y = np.asarray(datasets[1][:, -1], "int32")      # change : loading test set labels
+    train_set = new_data[:n_train_batches*batch_size, :]      # change
+    val_set = new_data[n_train_batches*batch_size:, :]        # change
+    train_set_x, train_set_y = shared_dataset((train_set[:, :img_h], train_set[:, -1]))  # change
+    val_set_x, val_set_y = shared_dataset((val_set[:, :img_h], val_set[:, -1]))          # change
     n_val_batches = n_batches - n_train_batches
     val_model = theano.function([index], classifier.errors(y),
          givens={
@@ -158,10 +170,13 @@ def train_conv_net(datasets,
     train_model = theano.function([index], cost, updates=grad_updates,
           givens={
             x: train_set_x[index*batch_size:(index+1)*batch_size],
-            y: train_set_y[index*batch_size:(index+1)*batch_size]})     
+            y: train_set_y[index*batch_size:(index+1)*batch_size]})
+
+
+
     test_pred_layers = []
     test_size = test_set_x.shape[0]
-    test_layer0_input = Words[T.cast(x.flatten(),dtype="int32")].reshape((test_size,1,img_h,Words.shape[1]))
+    test_layer0_input = Words[T.cast(x.flatten(), dtype="int32")].reshape((test_size, 1, img_h, Words.shape[1]))
     for conv_layer in conv_layers:
         test_layer0_output = conv_layer.predict(test_layer0_input, test_size)
         test_pred_layers.append(test_layer0_output.flatten(2))
@@ -265,22 +280,6 @@ def safe_update(dict_to, dict_from):
             raise KeyError(key)
         dict_to[key] = val
     return dict_to
-    
-# def get_idx_from_sent(sent, word_idx_map, max_l=51, k=300, filter_h=5):
-#     """
-#     Transforms sentence into a list of indices. Pad with zeroes.
-#     """
-#     x = []
-#     pad = filter_h - 1
-#     for i in xrange(pad):
-#         x.append(0)
-#     words = sent.split()
-#     for word in words:
-#         if word in word_idx_map:
-#             x.append(word_idx_map[word])
-#     while len(x) < max_l+2*pad:
-#         x.append(0)
-#     return x
 
 def make_idx_data_cv(cv):
     """
@@ -288,17 +287,19 @@ def make_idx_data_cv(cv):
     The last index of the sentence is it's class label
     todo : use scipy sparse matrix instead of padding with zeros
     """
-    train, test = [], []
+    train_x, train_y, text_x, test_y = [], [], [], []
 
     for x in os.listdir('./idx_data/'):
 
         if x == "%s.p" % cv:
-            test = cPickle.load(open("./idx_data/%s" % x, 'rb'))
+            test_x, test_y = cPickle.load(open("./idx_data/%s" % x, 'rb'))
         else:
-            train.append(cPickle.load(open("./idx_data/%s" % x, 'rb')))
+            tx, ty = cPickle.load(open("./idx_data/%s" % x, 'rb'))
+            train_x.append(tx)
+            train_y.append(ty)
 
-    train = vstack(train)
-    return [train, test]
+    train_x = vstack(train_x)
+    return [train_x, train_y, test_x, test_y]
 
 if __name__ == "__main__":
 
@@ -338,7 +339,7 @@ if __name__ == "__main__":
                               lr_decay=0.95,
                               filter_hs=[3, 4, 5],
                               conv_non_linear="relu",
-                              hidden_units=[100,2], 
+                              hidden_units=[100, 2],
                               shuffle_batch=True, 
                               n_epochs=25, 
                               sqr_norm_lim=9,
